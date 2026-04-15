@@ -1,3 +1,39 @@
+<script setup lang="ts">
+  import { login } from '@/api/auth'
+  import { useRouter } from 'vue-router'
+  import { ref } from 'vue'
+
+  const router = useRouter()
+  const email = ref('')
+  const password = ref('')
+  const error = ref('')
+
+  async function Submit(){
+    error.value = ""
+    console.log('Submit appelé')
+    try{
+      console.log('Tentative de connexion avec email:', email.value)
+      const result = await login({
+        email : email.value,
+        password: password.value
+      })
+
+      if(result.error){
+        error.value = "Identifiant incorrect"
+      } else {
+        localStorage.setItem('token', result.token)
+        localStorage.setItem('user', JSON.stringify(result.user))
+        router.push('/UserSpace')
+      }
+    } catch (err){
+      error.value  = `Une erreur est survenue lors de l'inscription.`
+    }
+
+    email.value = ""
+    password.value = ""
+  }
+</script>
+
 <template>
   <div class="login-page">
 
@@ -15,18 +51,18 @@
         <h2>Se connecter</h2>
         <p class="form-subtitle">Pas encore de compte ? <a href="/register">S'inscrire</a></p>
 
-        <form class="form">
+        <form class="form" @submit.prevent="Submit">
           <div class="form-group">
             <label for="email">Adresse e-mail</label>
-            <input id="email" type="email" placeholder="ibrahim@villejuif.fr" />
+            <input v-model="email" id="email" type="email" placeholder="ibrahim@villejuif.fr" />
           </div>
 
           <div class="form-group">
             <label for="password">Mot de passe</label>
-            <input id="password" type="password" placeholder="••••••••" />
+            <input v-model="password" id="password" type="password" placeholder="••••••••" />
             <a href="#" class="forgot">Mot de passe oublié ?</a>
           </div>
-
+          <p v-if="error">{{ error }}</p>
           <button type="submit" class="btn-submit">Se connecter</button>
         </form>
       </div>

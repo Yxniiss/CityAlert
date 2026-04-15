@@ -1,5 +1,7 @@
 <script setup lang="ts">
     import {ref} from 'vue'
+    import { register } from '@/api/auth'
+    import { useRouter } from 'vue-router'
 
     const firstName = ref('')
     const lastName = ref('')
@@ -8,7 +10,11 @@
     const confirm = ref('')
     const error = ref('')
 
-    function Submit(){
+    const router = useRouter()
+
+
+    async function Submit(){
+        console.log('Submit appelé')
         error.value = ""
         if(password.value != confirm.value){
             error.value = "Les mots de passe ne correspondent pas"
@@ -19,8 +25,29 @@
             error.value = "Mot de passe trop petit"
             return
         }
+        try{
+          const result = await register({
+            email: email.value,
+            password: password.value,
+            nom: lastName.value,
+            prenom: firstName.value
+          })
 
+          if (result.error) {
+            error.value = result.error
+          } else {
+            // Rediriger vers la page de connexion ou la page d'accueil
+            router.push("/login")
+          }
+        } catch (err) {
+          error.value = `Une erreur est survenue lors de l'inscription. error: ${err}`
+        }
 
+        email.value = ""
+        password.value = ""
+        confirm.value = ""
+        lastName.value = ""
+        firstName.value = ""
     }
     
 </script>

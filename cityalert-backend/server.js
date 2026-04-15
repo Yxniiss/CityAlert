@@ -1,9 +1,11 @@
+const cors = require('cors'); // module pour gérer les requetes cross-origin, permet au frontend de faire des requetes vers le backend depuis un domaine différent  
 const express = require("express"); // creer un server avec express
 const mysql = require("mysql2"); // module pour se connecter à une base de données MySQL
 const bcrypt = require("bcrypt"); // module pour hasher les mots de passe avant de les stocker dans la DB pour des raisons de sécurité
 const multer = require('multer');
 require('dotenv').config(); //sert a stocker des variable sensibles dans un fichier .env et les charger dans process.env
 const jwt = require("jsonwebtoken");
+
 
 
 const db = mysql.createConnection({ //creer une connexion a la DB en utilisant les variables d'environnement stocker dans .env
@@ -15,7 +17,19 @@ const db = mysql.createConnection({ //creer une connexion a la DB en utilisant l
 
 
 const app = express(); // creer le serveur express
-app.use(express.json()); // Middleware pour parser le corps de la requete en JSON
+
+/*app.use((req, res, next) => { // Middleware pour logger les requetes entrantes dans la console pour faciliter le debug
+  console.log(`${req.method} ${req.url} ${req.headers.origin}`);
+  next();
+});*/
+app.use(cors({
+  origin: 'http://localhost:5174',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', "OPTIONS", "PATCH"],
+  allowedHeaders: ['Content-Type', 'Authorization' ],
+  preflightContinue: false,
+})); // Middleware pour activer CORS et permettre les requetes cross-origin entre le frontend et le backend 
+
+app.use(express.json()); // Middleware pour parser le corps des requetes en JSON, permet de recuperer les données envoyées par le frontend dans req.body
 app.use('/uploads', express.static('uploads'));
 
 
@@ -61,6 +75,7 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 
 app.get('/', (req, res) => { // definir une route pour la racine du serveur pour tester le serveur
+  console.log("Received request to /");
   res.send('Hello, World!');
 });
 
@@ -85,9 +100,9 @@ app.post('/register', async (req, res) => {
     
     const mdp = await bcrypt.hash(password, 10);// hasher le mot de passe avant de le stocker dans la DB pour des raisons de sécurité
     
-    db.query('INSERT INTO users (email, password, nom, prenom) VALUES (?, ?, ?, ?)', [email, mdp, nom, prenom], (err, results) => {
+    db.query('INSERT INTO users (email, password, nom, prenom, role) VALUES (?, ?, ?, ?, ?)', [email, mdp, nom, prenom, 'user'], (err, results) => {
       if (err) {
-        console.error('Error registering user:', err);
+        console.error('Error registering user:', err);  
         res.status(500).send('Error registering user');
         return;
       }
@@ -118,7 +133,7 @@ app.post('/login', (req, res) => {
       return res.status(401).json({ error: 'Mot de passe incorrect' });
     }
     const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' }); // generer un token JWT qui contient l'id de l'utilisateur et qui expire dans 1 heure
-    res.json({ message: 'Login successful', token });
+    res.json({ message: 'Login successful', token, user : {  nom: user.nom, prenom: user.prenom } });
   });
 
   
@@ -149,7 +164,8 @@ app.get('/reports', (req, res) => {
 app.post('/reports', authMiddleware,upload.single('image'), (req, res) => {
   const { title, description, latitude, longitude } = req.body;
   const image_url = req.file ? req.file.filename : null;
-  const userId = req.user.userId;
+  const user = jwt.decode(req.headers.authorization.split(' ')[1]); // decoder le token JWT pour recuperer l'id de l'utilisateur qui a fait la requete
+  const user_id = user.userId; // utiliser l'id de l'utilisateur connecté
   
   if (!title || !description) {
   return res.status(400).json({ error: 'Champs obligatoires' });
@@ -209,7 +225,6 @@ app.get('/my-reports', authMiddleware, (req, res) => {
     res.json(results);
   });
 });
-
 
 app.get('/admin/reports', authMiddleware, roleMiddleware('admin'), (req, res) => {
   const status = req.query.status || 'pending';
@@ -285,28 +300,6 @@ app.get('/stats/priority', authMiddleware, roleMiddleware('admin'), (req, res) =
     }
     res.json(results);
   });
-});
-
-  
-
-
-
-
-
-
-
-
-
-
-
-
-
-db.query('SELECT 1', (err, results) => { // tester la connexion a la DB en executant une requete simple
-  if (err) {
-    console.error('Error connecting to database:', err);
-    return;
-  }
-  console.log('Connected to database');
 });
 
 
