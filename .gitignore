@@ -1,0 +1,5 @@
+cityalert-backend/node_modules/
+cityalert-backend/.env
+cityalert-backend/.history/
+cityalert-backend/.zencoder/
+cityalert-backend/.zenflow/
