@@ -41,3 +41,14 @@ export function getStatsPriority() {
         method: "GET"
     })
 }
+
+export function getUsers() {
+    return apiFetch('/admin/users', { method: 'GET' })
+}
+
+export function updateUserRole(id: number, role: string) {
+    return apiFetch(`/admin/users/${id}/role`, {
+        method: 'PUT',
+        body: JSON.stringify({ role })
+    })
+}

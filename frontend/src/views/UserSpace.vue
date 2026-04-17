@@ -37,7 +37,7 @@ onMounted(async () => {
 function logout() {
   localStorage.removeItem('token')
   localStorage.removeItem('user')
-  router.push('/login')
+  router.push('/')
 }
 
 const pendingCount  = computed(() => reports.value.filter(r => r.status === 'pending').length)

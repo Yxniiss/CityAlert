@@ -3,3 +3,5 @@ cityalert-backend/.env
 cityalert-backend/.history/
 cityalert-backend/.zencoder/
 cityalert-backend/.zenflow/
+frontend/node_modules/
+frontend/dist/

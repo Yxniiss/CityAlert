@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
 import markerIcon from 'leaflet/dist/images/marker-icon.png'
 import markerShadow from 'leaflet/dist/images/marker-shadow.png'
 import { getReports } from '@/api/report'
-import { BASE_URL } from '@/api/index'
+import { getPublicStats, BASE_URL } from '@/api/index'
 
-// Fix default marker icons broken by Vite's asset pipeline
 delete (L.Icon.Default.prototype as any)._getIconUrl
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: markerIcon2x,
@@ -16,10 +16,31 @@ L.Icon.Default.mergeOptions({
   shadowUrl: markerShadow,
 })
 
+const router = useRouter()
 const mapContainer = ref<HTMLElement | null>(null)
-const reportCount = ref(0)
 let map: L.Map | null = null
 
+// ── State ──
+const isLoadingStats   = ref(true)
+const isLoadingReports = ref(true)
+const statsError       = ref(false)
+const reportsError     = ref(false)
+
+const stats         = ref({ total: 0, resolved: 0, active: 0, resolutionRate: 0 })
+const recentReports = ref<any[]>([])
+const mapReportCount = ref(0)
+
+// ── Auth ──
+const isLoggedIn = computed(() => {
+  try {
+    const token = localStorage.getItem('token')
+    if (!token) return false
+    const payload = JSON.parse(atob(token.split('.')[1]))
+    return payload.exp * 1000 > Date.now()
+  } catch { return false }
+})
+
+// ── Helpers ──
 const STATUS_LABELS: Record<string, string> = {
   pending:  'En attente',
   approved: 'Pris en charge',
@@ -27,37 +48,77 @@ const STATUS_LABELS: Record<string, string> = {
   rejected: 'Rejeté',
 }
 
-onMounted(async () => {
-  if (!mapContainer.value) return
+const formatDate = (s: string | null | undefined) => {
+  if (!s) return ''
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? '' : d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })
+}
 
-  // Villejuif center
+const truncate = (s: string, n: number) =>
+  s && s.length > n ? s.slice(0, n) + '…' : (s ?? '')
+
+const getStatusClass = (status: string) =>
+  ({ pending: 'badge-pending', approved: 'badge-approved', resolved: 'badge-resolved', rejected: 'badge-rejected' }[status] ?? 'badge-pending')
+
+// ── Navigation ──
+const goToSignal  = () => router.push(isLoggedIn.value ? '/UserSpace' : '/login')
+const scrollToMap = () => document.getElementById('map-section')?.scrollIntoView({ behavior: 'smooth' })
+
+// ── Map init (synchrone, dès que le DOM est prêt) ──
+function initMap() {
+  if (!mapContainer.value || map) return
   map = L.map(mapContainer.value).setView([48.7937, 2.3647], 14)
-
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     maxZoom: 19,
   }).addTo(map)
+}
+
+// ── Stats ──
+async function loadStats() {
+  isLoadingStats.value = true
+  statsError.value = false
+  const data = await getPublicStats()
+  if (data && !data.error) {
+    stats.value = data
+  } else {
+    statsError.value = true
+  }
+  isLoadingStats.value = false
+}
+
+// ── Signalements + marqueurs ──
+async function loadReports() {
+  isLoadingReports.value = true
+  reportsError.value = false
 
   const data = await getReports()
-  const reports = data.results ?? []
-  reportCount.value = reports.length
+
+  if (!data || data.error || !Array.isArray(data.results)) {
+    reportsError.value = true
+    isLoadingReports.value = false
+    return
+  }
+
+  const reports: any[] = data.results
+  recentReports.value = reports.slice(0, 3)
+  isLoadingReports.value = false
+
+  // Ajouter les marqueurs sur la carte déjà initialisée
+  if (!map) return
 
   const bounds: [number, number][] = []
 
   for (const report of reports) {
     const lat = parseFloat(report.latitude)
     const lng = parseFloat(report.longitude)
-
     if (isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) continue
     if (Math.abs(lat) > 90 || Math.abs(lng) > 180) continue
 
     bounds.push([lat, lng])
 
     const statusLabel = STATUS_LABELS[report.status] ?? 'En attente'
-    const statusClass = report.status ?? 'pending'
-    const date = report.created_at
-      ? new Date(report.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
-      : ''
+    const date = formatDate(report.created_at)
     const imgHtml = report.image_url
       ? `<img src="${BASE_URL}/uploads/${report.image_url}" style="width:100%;height:80px;object-fit:cover;border-radius:6px;margin:6px 0 2px" />`
       : ''
@@ -65,25 +126,33 @@ onMounted(async () => {
       ? `<p class="map-popup-count">▲ ${report.report_count} signalements similaires</p>`
       : ''
 
-    const popup = `
-      <div class="map-popup">
-        <span class="map-popup-status ${statusClass}">${statusLabel}</span>
-        <strong>${report.title}</strong>
-        <p>${report.description}</p>
-        ${date ? `<p class="map-popup-date">${date}</p>` : ''}
-        ${countHtml}
-        ${imgHtml}
-      </div>
-    `
-
     L.marker([lat, lng])
       .addTo(map!)
-      .bindPopup(popup, { maxWidth: 240 })
+      .bindPopup(`
+        <div class="map-popup">
+          <span class="map-popup-status ${report.status ?? 'pending'}">${statusLabel}</span>
+          <strong>${report.title ?? ''}</strong>
+          <p>${report.description ?? ''}</p>
+          ${date ? `<p class="map-popup-date">${date}</p>` : ''}
+          ${countHtml}
+          ${imgHtml}
+        </div>
+      `, { maxWidth: 240 })
   }
+
+  mapReportCount.value = bounds.length
 
   if (bounds.length > 0) {
     map.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 })
   }
+}
+
+onMounted(() => {
+  // 1. Carte initialisée immédiatement (synchrone)
+  initMap()
+  // 2. Données chargées en parallèle (asynchrone)
+  loadStats()
+  loadReports()
 })
 
 onUnmounted(() => {
@@ -103,83 +172,117 @@ onUnmounted(() => {
         tient informé.
       </p>
       <div class="hero-actions">
-        <button class="btn-primary">Faire un signalement</button>
-        <button class="btn-outline">Voir les problèmes en cours</button>
+        <button class="btn-primary" @click="goToSignal">Faire un signalement</button>
+        <button class="btn-outline" @click="scrollToMap">Voir les problèmes en cours</button>
       </div>
 
+      <!-- Stats dynamiques -->
       <div class="hero-stats">
-        <div class="stat">
-          <span class="stat-number">1 284</span>
-          <span class="stat-label">Signalements traités</span>
-        </div>
-        <div class="stat-divider"></div>
-        <div class="stat">
-          <span class="stat-number">93%</span>
-          <span class="stat-label">Taux de résolution</span>
-        </div>
-        <div class="stat-divider"></div>
-        <div class="stat">
-          <span class="stat-number">48h</span>
-          <span class="stat-label">Délai moyen de réponse</span>
-        </div>
+        <template v-if="isLoadingStats">
+          <div class="stat"><div class="skeleton-num"></div><span class="stat-label">Signalements traités</span></div>
+          <div class="stat-divider"></div>
+          <div class="stat"><div class="skeleton-num"></div><span class="stat-label">Taux de résolution</span></div>
+          <div class="stat-divider"></div>
+          <div class="stat"><div class="skeleton-num"></div><span class="stat-label">En cours</span></div>
+        </template>
+        <template v-else-if="!statsError">
+          <div class="stat">
+            <span class="stat-number">{{ stats.resolved.toLocaleString('fr-FR') }}</span>
+            <span class="stat-label">Signalements traités</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="stat-number">{{ stats.resolutionRate }}%</span>
+            <span class="stat-label">Taux de résolution</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat">
+            <span class="stat-number">{{ stats.active.toLocaleString('fr-FR') }}</span>
+            <span class="stat-label">En cours</span>
+          </div>
+        </template>
+        <template v-else>
+          <p class="stats-error">Données non disponibles</p>
+        </template>
       </div>
     </div>
 
+    <!-- Cartes signalements récents -->
     <div class="hero-right">
-      <div class="report-card">
-        <div class="card-header">
-          <span class="card-badge voirie">Voirie</span>
-          <span class="card-id">#1230</span>
+
+      <!-- Skeleton loading -->
+      <template v-if="isLoadingReports">
+        <div v-for="i in 3" :key="i" class="report-card skeleton-card">
+          <div class="skeleton-line short"></div>
+          <div class="skeleton-line"></div>
+          <div class="skeleton-line medium"></div>
+          <div class="skeleton-line short"></div>
         </div>
-        <p class="card-desc">Nid de poule dangereux au carrefour de la rue Pasteur, profond d'environ 15cm.</p>
-        <div class="card-img-placeholder"><span>1 photo jointe</span></div>
-        <div class="card-footer">
-          <span class="card-location">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>
-            Rue Pasteur, Villejuif
-          </span>
-          <span class="card-votes">▲ 12 signalements</span>
-        </div>
+      </template>
+
+      <!-- Erreur chargement -->
+      <div v-else-if="reportsError" class="reports-error-box">
+        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+        </svg>
+        <p>Impossible de charger les signalements.<br>Vérifiez que le serveur est démarré.</p>
+        <button class="btn-retry" @click="loadReports">Réessayer</button>
       </div>
 
-      <div class="report-card">
-        <div class="card-header">
-          <span class="card-badge eclairage">Éclairage public</span>
-          <span class="card-id">#1229</span>
-        </div>
-        <p class="card-desc">Lampadaire éteint depuis 3 jours avenue de la République.</p>
-        <div class="card-footer">
-          <span class="card-location">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>
-            Av. de la République, Villejuif
-          </span>
-          <span class="card-votes">▲ 8 signalements</span>
-        </div>
+      <!-- Aucun signalement -->
+      <div v-else-if="recentReports.length === 0" class="reports-empty-box">
+        <p>Aucun signalement pour le moment.<br>Soyez le premier à signaler un problème !</p>
+        <button class="btn-primary small" @click="goToSignal">Faire un signalement</button>
       </div>
 
-      <div class="report-card">
-        <div class="card-header">
-          <span class="card-badge eclairage">Éclairage public</span>
-          <span class="card-id">#1228</span>
+      <!-- Cartes réelles -->
+      <template v-else>
+        <div v-for="report in recentReports" :key="report.id" class="report-card">
+          <div class="card-header">
+            <span class="card-badge" :class="getStatusClass(report.status)">
+              {{ STATUS_LABELS[report.status] ?? 'En attente' }}
+            </span>
+            <span class="card-id">#{{ report.id }}</span>
+          </div>
+          <p class="card-title">{{ truncate(report.title, 52) }}</p>
+          <p class="card-desc">{{ truncate(report.description, 95) }}</p>
+          <div v-if="report.image_url" class="card-img-pill">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>
+            </svg>
+            1 photo jointe
+          </div>
+          <div class="card-footer">
+            <span v-if="formatDate(report.created_at)" class="card-date">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>
+              </svg>
+              {{ formatDate(report.created_at) }}
+            </span>
+            <span v-else class="card-date">#{{ report.id }}</span>
+            <span v-if="(report.report_count ?? 1) > 1" class="card-votes">
+              ▲ {{ report.report_count }}
+            </span>
+          </div>
         </div>
-        <p class="card-desc">Lampadaire éteint depuis 3 jours avenue de la République.</p>
-        <div class="card-footer">
-          <span class="card-location">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>
-            Av. de la République, Villejuif
-          </span>
-          <span class="card-votes">▲ 5 signalements</span>
-        </div>
-      </div>
+      </template>
+
     </div>
   </section>
 
   <!-- ── Carte ── -->
-  <section class="map-section">
+  <section id="map-section" class="map-section">
     <div class="map-header">
       <div>
         <h2 class="map-title">Signalements en cours</h2>
-        <p class="map-subtitle">{{ reportCount }} signalement{{ reportCount !== 1 ? 's' : '' }} sur la carte</p>
+        <p class="map-subtitle">
+          <template v-if="isLoadingReports">Chargement des marqueurs…</template>
+          <template v-else-if="mapReportCount > 0">
+            {{ mapReportCount }} signalement{{ mapReportCount !== 1 ? 's' : '' }} sur la carte
+          </template>
+          <template v-else-if="!reportsError">Aucun signalement géolocalisé</template>
+          <template v-else>Carte disponible — données en erreur</template>
+        </p>
       </div>
     </div>
     <div ref="mapContainer" class="map-container"></div>
@@ -198,11 +301,7 @@ onUnmounted(() => {
   background-color: var(--color-background);
 }
 
-.hero-left {
-  display: flex;
-  flex-direction: column;
-  gap: 1.75rem;
-}
+.hero-left  { display: flex; flex-direction: column; gap: 1.75rem; }
 
 .hero-title {
   font-family: var(--font-title);
@@ -210,7 +309,6 @@ onUnmounted(() => {
   line-height: 1.1;
   color: var(--color-primary);
 }
-
 .hero-title em { font-style: italic; }
 
 .hero-desc {
@@ -220,16 +318,11 @@ onUnmounted(() => {
   max-width: 420px;
 }
 
-.hero-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  align-items: flex-start;
-}
+.hero-actions { display: flex; flex-direction: column; gap: 0.75rem; align-items: flex-start; }
 
 .btn-primary {
   background-color: var(--color-primary);
-  color: #ffffff;
+  color: #fff;
   border: none;
   padding: 0.75rem 1.75rem;
   font-size: 0.8rem;
@@ -240,6 +333,7 @@ onUnmounted(() => {
   transition: opacity 0.2s;
 }
 .btn-primary:hover { opacity: 0.85; }
+.btn-primary.small { padding: 0.5rem 1.25rem; font-size: 0.75rem; margin-top: 0.5rem; }
 
 .btn-outline {
   background-color: transparent;
@@ -255,72 +349,116 @@ onUnmounted(() => {
 }
 .btn-outline:hover { background-color: rgba(4, 44, 83, 0.06); }
 
-.hero-stats {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  padding-top: 0.5rem;
-}
-
+/* ── Stats ── */
+.hero-stats { display: flex; align-items: center; gap: 1.5rem; padding-top: 0.5rem; }
 .stat { display: flex; flex-direction: column; gap: 0.2rem; }
-
-.stat-number {
-  font-family: var(--font-title);
-  font-size: 1.75rem;
-  color: var(--color-primary);
-  line-height: 1;
-}
-
-.stat-label { font-size: 0.72rem; color: var(--color-text-muted); }
-
+.stat-number { font-family: var(--font-title); font-size: 1.75rem; color: var(--color-primary); line-height: 1; }
+.stat-label  { font-size: 0.72rem; color: var(--color-text-muted); }
 .stat-divider { width: 1px; height: 36px; background-color: var(--color-border); }
+.stats-error { font-size: 0.8rem; color: var(--color-text-muted); font-style: italic; }
 
+/* ── Skeleton ── */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position:  400px 0; }
+}
+.skeleton-num,
+.skeleton-line {
+  background: linear-gradient(90deg, #e6edf5 25%, #d0dcea 50%, #e6edf5 75%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+  border-radius: 4px;
+}
+.skeleton-num    { width: 60px; height: 28px; margin-bottom: 4px; }
+.skeleton-line   { width: 100%; height: 12px; margin: 5px 0; }
+.skeleton-line.short  { width: 50%; }
+.skeleton-line.medium { width: 75%; }
+
+/* ── Cards ── */
 .hero-right { display: flex; flex-direction: column; gap: 0.875rem; }
 
 .report-card {
-  background-color: #ffffff;
+  background-color: #fff;
   border-radius: 10px;
   padding: 1rem 1.25rem;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 0.5rem;
   box-shadow: 0 2px 8px rgba(4, 44, 83, 0.07);
 }
+.skeleton-card { min-height: 110px; }
 
 .card-header { display: flex; align-items: center; gap: 0.6rem; }
+.card-id     { font-size: 0.72rem; color: var(--color-text-muted); }
 
 .card-badge {
   font-size: 0.7rem;
   font-weight: 600;
   padding: 0.2rem 0.6rem;
   border-radius: 999px;
+  white-space: nowrap;
 }
-.card-badge.voirie  { background-color: #FFF3CD; color: #7A5200; }
-.card-badge.eclairage { background-color: #D4EDDA; color: #155724; }
+.badge-pending  { background-color: #FFF3CD; color: #7A5200; }
+.badge-approved { background-color: #cce5ff; color: #004085; }
+.badge-resolved { background-color: #D4EDDA; color: #155724; }
+.badge-rejected { background-color: #f8d7da; color: #721c24; }
 
-.card-id { font-size: 0.72rem; color: var(--color-text-muted); }
+.card-title { font-size: 0.875rem; font-weight: 600; color: var(--color-text); line-height: 1.4; }
+.card-desc  { font-size: 0.82rem; color: var(--color-text-muted); line-height: 1.5; }
 
-.card-desc { font-size: 0.85rem; color: var(--color-text); line-height: 1.5; }
-
-.card-img-placeholder {
+.card-img-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   background-color: #f0f4f8;
   border-radius: 6px;
-  padding: 0.5rem 0.75rem;
+  padding: 0.35rem 0.7rem;
   font-size: 0.72rem;
   color: var(--color-text-muted);
+  width: fit-content;
 }
 
 .card-footer { display: flex; align-items: center; justify-content: space-between; }
-
-.card-location {
+.card-date {
   display: flex;
   align-items: center;
   gap: 0.3rem;
   font-size: 0.75rem;
   color: var(--color-text-muted);
 }
-
 .card-votes { font-size: 0.75rem; color: var(--color-text-muted); }
+
+/* Error / empty */
+.reports-error-box,
+.reports-empty-box {
+  background-color: #fff;
+  border-radius: 10px;
+  padding: 2.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.875rem;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  box-shadow: 0 2px 8px rgba(4, 44, 83, 0.07);
+  line-height: 1.6;
+}
+.reports-error-box svg { color: #e05a2b; opacity: 0.8; }
+
+.btn-retry {
+  margin-top: 0.25rem;
+  background: none;
+  border: 1.5px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.45rem 1.1rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-primary);
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.btn-retry:hover { border-color: var(--color-primary); background-color: rgba(4,44,83,0.04); }
 
 /* ── Map section ── */
 .map-section {
@@ -343,10 +481,7 @@ onUnmounted(() => {
   margin-bottom: 0.2rem;
 }
 
-.map-subtitle {
-  font-size: 0.875rem;
-  color: var(--color-text-muted);
-}
+.map-subtitle { font-size: 0.875rem; color: var(--color-text-muted); }
 
 .map-container {
   width: 100%;
@@ -358,12 +493,12 @@ onUnmounted(() => {
 }
 </style>
 
-<!-- Popup styles (non-scoped car injectés par Leaflet dans le DOM) -->
+<!-- Popup Leaflet — non scoped car injecté dans le DOM par Leaflet -->
 <style>
 .map-popup { display: flex; flex-direction: column; gap: 4px; font-family: inherit; }
 .map-popup strong { font-size: 0.875rem; color: #042c53; }
 .map-popup p { font-size: 0.8rem; color: #555; margin: 0; line-height: 1.4; }
-.map-popup-date { font-size: 0.7rem !important; color: #999 !important; }
+.map-popup-date  { font-size: 0.7rem !important; color: #999 !important; }
 .map-popup-count { font-size: 0.7rem !important; color: #777 !important; }
 .map-popup-status {
   display: inline-block;
@@ -375,7 +510,7 @@ onUnmounted(() => {
   margin-bottom: 2px;
 }
 .map-popup-status.pending  { background: #FFF3CD; color: #7A5200; }
-.map-popup-status.approved { background: #D4EDDA; color: #155724; }
-.map-popup-status.resolved { background: #D1ECF1; color: #0C5460; }
+.map-popup-status.approved { background: #cce5ff; color: #004085; }
+.map-popup-status.resolved { background: #D4EDDA; color: #155724; }
 .map-popup-status.rejected { background: #F8D7DA; color: #721C24; }
 </style>

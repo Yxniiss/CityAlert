@@ -28,6 +28,10 @@ export async function apiFetch(endpoint: string, options : { method: string, bod
   }
 }
 
+export function getPublicStats() {
+  return apiFetch('/public/stats', { method: 'GET' })
+}
+
 export function getProfile() {
   return apiFetch("/profile", { method: "GET" })
 }

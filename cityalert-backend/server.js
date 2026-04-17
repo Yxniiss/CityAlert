@@ -148,8 +148,8 @@ app.post('/login', (req, res) => {
     if (!isPasswordValid) {
       return res.status(401).json({ error: 'Mot de passe incorrect' });
     }
-    const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: '1h' }); // generer un token JWT qui contient l'id de l'utilisateur et qui expire dans 1 heure
-    res.json({ message: 'Login successful', token, user : {  nom: user.nom, prenom: user.prenom } });
+    const token = jwt.sign({ userId: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.json({ message: 'Login successful', token, user: { nom: user.nom, prenom: user.prenom, role: user.role } });
   });
 
   
@@ -164,8 +164,8 @@ app.get('/reports', (req, res) => {
 
   const sort = req.query.sort;
 
-  const allowedSort = ['created_at', 'priority'];
-  const sortField = allowedSort.includes(sort) ? sort : 'created_at';
+  const allowedSort = ['id', 'priority'];
+  const sortField = allowedSort.includes(sort) ? sort : 'id';
 
   db.query(`SELECT * FROM reports ORDER BY ${sortField} DESC LIMIT ? OFFSET ?`,[limit, offset],(err, results) => {
       if (err) {
@@ -395,6 +395,48 @@ app.get('/stats/priority', authMiddleware, roleMiddleware('admin'), (req, res) =
   });
 });
 
+
+app.get('/public/stats', (req, res) => {
+  db.query(
+    `SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END) AS resolved,
+      SUM(CASE WHEN status IN ('pending','approved') THEN 1 ELSE 0 END) AS active
+    FROM reports`,
+    (err, results) => {
+      if (err) return res.status(500).json({ error: 'Erreur serveur' });
+      const { total, resolved, active } = results[0];
+      const resolutionRate = total > 0 ? Math.round((resolved / total) * 100) : 0;
+      res.json({ total, resolved, active, resolutionRate });
+    }
+  );
+});
+
+app.get('/admin/users', authMiddleware, roleMiddleware('admin'), (req, res) => {
+  db.query('SELECT id, email, nom, prenom, role FROM users ORDER BY id ASC', (err, results) => {
+    if (err) return res.status(500).json({ error: 'Error fetching users' });
+    res.json({ count: results.length, users: results });
+  });
+});
+
+app.put('/admin/users/:id/role', authMiddleware, roleMiddleware('admin'), (req, res) => {
+  const targetId = parseInt(req.params.id);
+  const { role } = req.body;
+  const allowedRoles = ['user', 'admin', 'moderateur'];
+
+  if (!allowedRoles.includes(role)) {
+    return res.status(400).json({ error: 'Rôle invalide' });
+  }
+  if (targetId === req.user.userId) {
+    return res.status(400).json({ error: 'Vous ne pouvez pas modifier votre propre rôle' });
+  }
+
+  db.query('UPDATE users SET role = ? WHERE id = ?', [role, targetId], (err, result) => {
+    if (err) return res.status(500).json({ error: 'Erreur lors de la mise à jour du rôle' });
+    if (result.affectedRows === 0) return res.status(404).json({ error: 'Utilisateur introuvable' });
+    res.json({ message: 'Rôle mis à jour' });
+  });
+});
 
 const PORT = process.env.PORT || 3000; // definir le port sur lequel le serveur va ecouter, soit celui defini dans les variables d'environnement ou 3000 par defaut
 app.listen(PORT, () => {
