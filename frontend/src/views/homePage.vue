@@ -64,6 +64,25 @@ const getStatusClass = (status: string) =>
 const goToSignal  = () => router.push(isLoggedIn.value ? '/UserSpace' : '/login')
 const scrollToMap = () => document.getElementById('map-section')?.scrollIntoView({ behavior: 'smooth' })
 
+// ── Marqueurs colorés par statut ──
+const STATUS_COLORS: Record<string, string> = {
+  pending:  '#f59e0b',
+  approved: '#3b82f6',
+  resolved: '#22c55e',
+  rejected: '#ef4444',
+}
+
+function createStatusIcon(status: string) {
+  const color = STATUS_COLORS[status] ?? '#6b7280'
+  return L.divIcon({
+    html: `<div style="width:14px;height:14px;border-radius:50%;background:${color};border:2.5px solid white;box-shadow:0 1px 5px rgba(0,0,0,0.35)"></div>`,
+    className: '',
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
+    popupAnchor: [0, -10],
+  })
+}
+
 // ── Map init (synchrone, dès que le DOM est prêt) ──
 function initMap() {
   if (!mapContainer.value || map) return
@@ -126,7 +145,7 @@ async function loadReports() {
       ? `<p class="map-popup-count">▲ ${report.report_count} signalements similaires</p>`
       : ''
 
-    L.marker([lat, lng])
+    L.marker([lat, lng], { icon: createStatusIcon(report.status) })
       .addTo(map!)
       .bindPopup(`
         <div class="map-popup">
@@ -284,6 +303,12 @@ onUnmounted(() => {
           <template v-else>Carte disponible — données en erreur</template>
         </p>
       </div>
+    </div>
+    <div class="map-legend">
+      <span class="legend-item"><span class="legend-dot" style="background:#f59e0b"></span>En attente</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span>Pris en charge</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#22c55e"></span>Résolu</span>
+      <span class="legend-item"><span class="legend-dot" style="background:#ef4444"></span>Rejeté</span>
     </div>
     <div ref="mapContainer" class="map-container"></div>
   </section>
@@ -482,6 +507,24 @@ onUnmounted(() => {
 }
 
 .map-subtitle { font-size: 0.875rem; color: var(--color-text-muted); }
+
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+.legend-item { display: flex; align-items: center; gap: 0.4rem; }
+.legend-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+}
 
 .map-container {
   width: 100%;
