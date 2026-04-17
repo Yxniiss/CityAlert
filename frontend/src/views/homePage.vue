@@ -6,6 +6,7 @@ import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
 import markerIcon from 'leaflet/dist/images/marker-icon.png'
 import markerShadow from 'leaflet/dist/images/marker-shadow.png'
 import { getReports } from '@/api/report'
+import { BASE_URL } from '@/api/index'
 
 // Fix default marker icons broken by Vite's asset pipeline
 delete (L.Icon.Default.prototype as any)._getIconUrl
@@ -47,25 +48,37 @@ onMounted(async () => {
     const lat = parseFloat(report.latitude)
     const lng = parseFloat(report.longitude)
 
-    if (!lat || !lng || isNaN(lat) || isNaN(lng)) continue
+    if (isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) continue
     if (Math.abs(lat) > 90 || Math.abs(lng) > 180) continue
 
     bounds.push([lat, lng])
 
     const statusLabel = STATUS_LABELS[report.status] ?? 'En attente'
     const statusClass = report.status ?? 'pending'
+    const date = report.created_at
+      ? new Date(report.created_at).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
+      : ''
+    const imgHtml = report.image_url
+      ? `<img src="${BASE_URL}/uploads/${report.image_url}" style="width:100%;height:80px;object-fit:cover;border-radius:6px;margin:6px 0 2px" />`
+      : ''
+    const countHtml = (report.report_count ?? 1) > 1
+      ? `<p class="map-popup-count">▲ ${report.report_count} signalements similaires</p>`
+      : ''
 
     const popup = `
       <div class="map-popup">
         <span class="map-popup-status ${statusClass}">${statusLabel}</span>
         <strong>${report.title}</strong>
         <p>${report.description}</p>
+        ${date ? `<p class="map-popup-date">${date}</p>` : ''}
+        ${countHtml}
+        ${imgHtml}
       </div>
     `
 
     L.marker([lat, lng])
       .addTo(map!)
-      .bindPopup(popup, { maxWidth: 220 })
+      .bindPopup(popup, { maxWidth: 240 })
   }
 
   if (bounds.length > 0) {
@@ -350,6 +363,8 @@ onUnmounted(() => {
 .map-popup { display: flex; flex-direction: column; gap: 4px; font-family: inherit; }
 .map-popup strong { font-size: 0.875rem; color: #042c53; }
 .map-popup p { font-size: 0.8rem; color: #555; margin: 0; line-height: 1.4; }
+.map-popup-date { font-size: 0.7rem !important; color: #999 !important; }
+.map-popup-count { font-size: 0.7rem !important; color: #777 !important; }
 .map-popup-status {
   display: inline-block;
   font-size: 0.68rem;

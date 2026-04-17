@@ -39,4 +39,27 @@ const router = createRouter({
   routes
 })
 
+function isTokenExpired(token) {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]))
+    return payload.exp * 1000 < Date.now()
+  } catch {
+    return true
+  }
+}
+
+const PROTECTED = ['/UserSpace', '/adminSpace']
+
+router.beforeEach((to, _from, next) => {
+  if (!PROTECTED.includes(to.path)) return next()
+
+  const token = localStorage.getItem('token')
+  if (!token || isTokenExpired(token)) {
+    localStorage.removeItem('token')
+    localStorage.removeItem('user')
+    return next('/login')
+  }
+  next()
+})
+
 export default router
