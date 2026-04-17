@@ -11,11 +11,14 @@ const jwt = require("jsonwebtoken");
 
 
 
-const db = mysql.createConnection({ //creer une connexion a la DB en utilisant les variables d'environnement stocker dans .env
+const db = mysql.createPool({ //creer un pool de connexions a la DB en utilisant les variables d'environnement stocker dans .env
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME
+  database: process.env.DB_NAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 });
 
 
@@ -186,8 +189,11 @@ app.post('/reports', authMiddleware, (req, res, next) => {
   const user_id = user.userId; // utiliser l'id de l'utilisateur connecté
   
   if (!title || !description) {
-  return res.status(400).json({ error: 'Champs obligatoires' });
-}
+    return res.status(400).json({ error: 'Champs obligatoires' });
+  }
+  if (!latitude || !longitude || parseFloat(latitude) === 0 || parseFloat(longitude) === 0) {
+    return res.status(400).json({ error: 'Localisation obligatoire' });
+  }
 
   db.query(
     'SELECT * FROM reports WHERE latitude = ? AND longitude = ?', [latitude, longitude], (err, results) => {
@@ -241,6 +247,69 @@ app.get('/my-reports', authMiddleware, (req, res) => {
     }
 
     res.json(results);
+  });
+});
+
+app.put('/reports/:id', authMiddleware, (req, res, next) => {
+  upload.single('image')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, (req, res) => {
+  const reportId = req.params.id;
+  const userId = req.user.userId;
+  const { title, description } = req.body;
+
+  if (!title || !description) return res.status(400).json({ error: 'Titre et description obligatoires' });
+
+  db.query('SELECT * FROM reports WHERE id = ? AND user_id = ?', [reportId, userId], (err, results) => {
+    if (err) return res.status(500).json({ error: 'Erreur serveur' });
+    if (!results.length) return res.status(403).json({ error: 'Signalement introuvable ou non autorisé' });
+
+    const image_url = req.file ? req.file.filename : results[0].image_url;
+
+    db.query(
+      'UPDATE reports SET title = ?, description = ?, image_url = ? WHERE id = ?',
+      [title, description, image_url, reportId],
+      (err) => {
+        if (err) return res.status(500).json({ error: 'Erreur lors de la mise à jour' });
+        res.json({ message: 'Signalement mis à jour' });
+      }
+    );
+  });
+});
+
+app.delete('/reports/:id', authMiddleware, (req, res) => {
+  const reportId = req.params.id;
+  const userId = req.user.userId;
+
+  db.query('SELECT * FROM reports WHERE id = ? AND user_id = ?', [reportId, userId], (err, results) => {
+    if (err) return res.status(500).json({ error: 'Erreur serveur' });
+    if (!results.length) return res.status(403).json({ error: 'Signalement introuvable ou non autorisé' });
+
+    db.query('DELETE FROM reports WHERE id = ?', [reportId], (err) => {
+      if (err) return res.status(500).json({ error: 'Erreur lors de la suppression' });
+      res.json({ message: 'Signalement supprimé' });
+    });
+  });
+});
+
+app.get('/profile', authMiddleware, (req, res) => {
+  const userId = req.user.userId;
+  db.query('SELECT id, email, nom, prenom FROM users WHERE id = ?', [userId], (err, results) => {
+    if (err) return res.status(500).json({ error: 'Error fetching profile' });
+    if (!results.length) return res.status(404).json({ error: 'User not found' });
+    res.json(results[0]);
+  });
+});
+
+app.put('/profile', authMiddleware, (req, res) => {
+  const userId = req.user.userId;
+  const { nom, prenom } = req.body;
+  if (!nom || !prenom) return res.status(400).json({ error: 'Nom et prénom obligatoires' });
+  db.query('UPDATE users SET nom = ?, prenom = ? WHERE id = ?', [nom, prenom, userId], (err) => {
+    if (err) return res.status(500).json({ error: 'Error updating profile' });
+    res.json({ message: 'Profil mis à jour', nom, prenom });
   });
 });
 
